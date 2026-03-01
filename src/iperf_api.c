@@ -602,25 +602,25 @@ iperf_set_mapped_v4(struct iperf_test *ipt, const int val)
     ipt->mapped_v4 = val;
 }
 
-void 
+void
 iperf_set_on_new_stream_callback(struct iperf_test* ipt, void (*callback)(struct iperf_stream *))
 {
         ipt->on_new_stream = callback;
 }
 
-void 
+void
 iperf_set_on_test_start_callback(struct iperf_test* ipt, void (*callback)(struct iperf_test *))
 {
         ipt->on_test_start = callback;
 }
 
-void 
+void
 iperf_set_on_test_connect_callback(struct iperf_test* ipt, void (*callback)(struct iperf_test *))
 {
         ipt->on_connect = callback;
 }
 
-void 
+void
 iperf_set_on_test_finish_callback(struct iperf_test* ipt, void (*callback)(struct iperf_test *))
 {
         ipt->on_test_finish = callback;
@@ -1125,7 +1125,6 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
         {"bidir", no_argument, NULL, OPT_BIDIRECTIONAL},
         {"window", required_argument, NULL, 'w'},
         {"bind", required_argument, NULL, 'B'},
-        {"quic", no_argument, NULL, 'q'},
 #if defined(HAVE_SO_BINDTODEVICE)
         {"bind-dev", required_argument, NULL, OPT_BIND_DEV},
 #endif /* HAVE_SO_BINDTODEVICE */
@@ -1316,9 +1315,6 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
             }
             case 'u':
                 set_protocol(test, Pudp);
-                break;
-            case 'q':
-                set_protocol(test, Pquic);
 		client_flag = 1;
                 break;
             case OPT_SCTP:
@@ -2034,7 +2030,7 @@ iperf_check_throttle(struct iperf_stream *sp, struct iperf_time *nowP)
     uint64_t bits_per_second;
     int64_t missing_rate;
     uint64_t bits_sent;
-    
+
 #if defined(HAVE_CLOCK_NANOSLEEP) || defined(HAVE_NANOSLEEP)
     struct timespec nanosleep_time;
     int64_t time_to_green_light, delta_bits;
@@ -2221,7 +2217,7 @@ iperf_recv_mt(struct iperf_stream *sp)
 		i_errno = IESTREAMREAD;
 		return r;
 	    }
-            
+
             /* Collect statistics only if receive did not timeout (e.g. `Nread()` may timeout).
              * This is also important for `--rcv-timeout` to work properly.
              */
@@ -2430,8 +2426,6 @@ send_parameters(struct iperf_test *test)
 	    cJSON_AddTrueToObject(j, "udp");
         else if (test->protocol->id == Psctp)
             cJSON_AddTrueToObject(j, "sctp");
-        else if (test->protocol->id == Pquic)
-            cJSON_AddTrueToObject(j, "quic");
 	cJSON_AddNumberToObject(j, "omit", test->omit);
 	if (test->server_affinity != -1)
 	    cJSON_AddNumberToObject(j, "server_affinity", test->server_affinity);
@@ -3200,37 +3194,10 @@ protocol_free(struct protocol *proto)
 }
 
 /**************************************************************************/
-// TODO: add actual QUIC functionality. These are placeholder functions to allow the --quic flag to run without error, but with wrong functionality
-int iperf_quic_listen(struct iperf_test *test)
-{
-    return iperf_tcp_listen(test);
-}
-int iperf_quic_connect(struct iperf_test *test)
-{
-    return iperf_tcp_connect(test);
-}
-int iperf_quic_accept(struct iperf_test *test)
-{
-    return iperf_tcp_accept(test);
-}
-int iperf_quic_send(struct iperf_stream *sp)
-{
-    return iperf_tcp_send(sp);
-}
-int iperf_quic_recv(struct iperf_stream *sp)
-{
-    return iperf_tcp_recv(sp);
-}
-int iperf_quic_init(struct iperf_test *test)
-{
-    return iperf_udp_init(test);
-}
-// End temporary functions
-
 int
 iperf_defaults(struct iperf_test *testp)
 {
-    struct protocol *tcp, *udp, *quic;
+    struct protocol *tcp, *udp;
 #if defined(HAVE_SCTP_H)
     struct protocol *sctp;
 #endif /* HAVE_SCTP_H */
@@ -3325,23 +3292,6 @@ iperf_defaults(struct iperf_test *testp)
     udp->recv = iperf_udp_recv;
     udp->init = iperf_udp_init;
     SLIST_INSERT_AFTER(tcp, udp, protocols);
-
-    quic = protocol_new();
-    if (!quic) {
-        protocol_free(tcp);
-        return -1;
-    }
-
-    // TODO: implement QUIC protocol functions and set them here
-    quic->id = Pquic;
-    quic->name = "QUIC";
-    quic->accept = iperf_quic_accept;
-    quic->listen = iperf_quic_listen;
-    quic->connect = iperf_quic_connect;
-    quic->send = iperf_quic_send;
-    quic->recv = iperf_quic_recv;
-    quic->init = iperf_quic_init;
-    SLIST_INSERT_AFTER(udp, quic, protocols);
 
     set_protocol(testp, Ptcp);
 
@@ -3880,7 +3830,7 @@ iperf_print_intermediate(struct iperf_test *test)
      * results around unless we're the server and the client requested the server output.
      *
      * This avoids unneeded memory build up for long sessions.
-     * 
+     *
      * The user can still opt in for all measurement data via the --json-stream-full-output option.
      */
     discard_json = test->json_stream == 1 && !test->json_stream_full_output && !(test->role == 's' && test->get_server_output);
@@ -4484,7 +4434,7 @@ iperf_print_results(struct iperf_test *test)
                      * ambiguities between the sender and receiver.
                      */
                     cJSON_AddItemToObject(test->json_end, sum_name, iperf_json_printf("start: %f  end: %f  seconds: %f  bytes: %d  bits_per_second: %f  jitter_ms: %f  lost_packets: %d  packets: %d  lost_percent: %f sender: %b", (double) start_time, (double) receiver_time, (double) receiver_time, (int64_t) total_sent, bandwidth * 8, (double) avg_jitter * 1000.0, (int64_t) lost_packets, (int64_t) total_packets, (double) lost_percent, stream_must_be_sender));
-                    
+
                     double sent_bandwidth = sender_time > 0 ? ((double) total_sent * 8 / sender_time) : 0.0;
                     double recv_bandwidth = receiver_time > 0 ? ((double) total_received * 8 / receiver_time) : 0.0;
                     /*
@@ -5582,7 +5532,7 @@ iperf_set_control_keepalive(struct iperf_test *test)
                 return -1;
             }
         }
-   
+
         // Seems that at least in Windows WSL2, TCP keepalive retries full interval must be
         // smaller than the idle interval. Otherwise, the keepalive message is sent only once.
         if (test->settings->cntl_ka_keepidle) {
