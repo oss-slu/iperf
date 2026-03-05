@@ -4214,6 +4214,7 @@ void
 iperf_print_results(struct iperf_test *test)
 {
 
+    
     cJSON *json_summary_streams = NULL;
 
     int lower_mode, upper_mode;
@@ -4223,7 +4224,22 @@ iperf_print_results(struct iperf_test *test)
 
     int tmp_sender_has_retransmits = test->sender_has_retransmits;
 
-    /* print final summary for all intervals */
+    int suppress_quic_stream_summary = 0;
+
+if (!test->json_output && test->protocol->id == Pquic) {
+    int stream_count = 0;
+    struct iperf_stream *sp_tmp;
+
+    SLIST_FOREACH(sp_tmp, &test->streams, streams) {
+        stream_count++;
+        if (stream_count > 1)
+            break;
+    }
+
+    if (stream_count > 1)
+        suppress_quic_stream_summary = 1;
+}
+
 
     if (test->json_output) {
         json_summary_streams = cJSON_CreateArray();
@@ -4361,6 +4377,10 @@ iperf_print_results(struct iperf_test *test)
                 bytes_received = sp->result->bytes_received;
                 total_sent += bytes_sent;
                 total_received += bytes_received;
+
+                if (suppress_quic_stream_summary) {
+                    continue;
+                }
 
                 if (sp->sender) {
                     sender_packet_count = sp->packet_count;
