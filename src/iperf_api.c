@@ -4226,20 +4226,26 @@ iperf_print_results(struct iperf_test *test)
 
     int suppress_quic_stream_summary = 0;
 
-if (!test->json_output && test->protocol->id == Pquic) {
-    int stream_count = 0;
-    struct iperf_stream *sp_tmp;
+if (test->protocol->id == Pquic) {
 
-    SLIST_FOREACH(sp_tmp, &test->streams, streams) {
-        stream_count++;
-        if (stream_count > 1)
-            break;
+    struct iperf_stream *sp;
+    struct iperf_interval_results *irp;
+
+    SLIST_FOREACH(sp, &test->streams, streams) {
+
+        if (!sp->result)
+            continue;
+
+        uint64_t total = 0;
+
+        TAILQ_FOREACH(irp, &sp->result->interval_results, irlistentries) {
+            total += irp->bytes_transferred;
+        }
+
+        sp->result->bytes_sent = total;
+        sp->result->bytes_received = total;
     }
-
-    if (stream_count > 1)
-        suppress_quic_stream_summary = 1;
 }
-
 
     if (test->json_output) {
         json_summary_streams = cJSON_CreateArray();
@@ -4366,6 +4372,9 @@ if (!test->json_output && test->protocol->id == Pquic) {
         receiver_time = sp->result->receiver_time;
         SLIST_FOREACH(sp, &test->streams, streams) {
             if (sp->sender == stream_must_be_sender) {
+                    if (test->protocol->id == Pquic && test->num_streams > 1) {
+                        continue;
+                    }
                 if (test->json_output) {
                     json_summary_stream = cJSON_CreateObject();
                     if (json_summary_stream == NULL)

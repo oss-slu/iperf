@@ -42,6 +42,12 @@ struct iperf_quic_stream_ctx {
     struct iperf_stream *sp;
 };
 
+struct quic_send_ctx {
+    uint8_t *buf;
+    size_t len;
+    struct iperf_stream *sp;
+};
+
 struct quic_stream_map {
     int id;
     struct iperf_quic_stream_ctx *ctx;
@@ -203,14 +209,18 @@ quic_stream_callback(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
     struct quic_send_ctx *sc =
         (struct quic_send_ctx *)Event->SEND_COMPLETE.ClientContext;
 
-    if (sc && sctx && sctx->sp && sctx->sp->result) {
+    if (!sc)
+        break;
 
-        /* interval stats */
-        sctx->sp->result->bytes_sent_this_interval += sc->len;
+    struct iperf_stream *sp = sc->sp;
+    struct iperf_quic_stream_ctx *sctx = NULL;
 
-        /* TOTAL stats (critical for final summary) */
-        sctx->sp->result->bytes_sent += sc->len;
+    if (sp)
+        sctx = (struct iperf_quic_stream_ctx *)sp->data;
 
+    if (sp && sp->result) {
+        sp->result->bytes_sent += sc->len;
+        sp->result->bytes_sent_this_interval += sc->len;
     }
 
     if (sctx) {
@@ -220,10 +230,8 @@ quic_stream_callback(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
         pthread_mutex_unlock(&sctx->lock);
     }
 
-    if (sc) {
-        free(sc->buf);
-        free(sc);
-    }
+    free(sc->buf);
+    free(sc);
 
     break;
 }
@@ -267,15 +275,24 @@ quic_stream_callback(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
         pthread_cond_broadcast(&sctx->cond);
         pthread_mutex_unlock(&sctx->lock);
         break;
-    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
-        if (!Event->SHUTDOWN_COMPLETE.AppCloseInProgress) {
-            MsQuic->StreamClose(Stream);
-        }
-        break;
-    default:
-        break;
+    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {
+
+    struct iperf_quic_stream_ctx *sctx =
+        (struct iperf_quic_stream_ctx *)Context;
+
+    if (sctx) {
+
+        if (sctx->stream)
+            ctx->api->StreamClose(sctx->stream);
+
+        pthread_mutex_destroy(&sctx->lock);
+        pthread_cond_destroy(&sctx->cond);
+        pthread_cond_destroy(&sctx->send_cond);
+
+        free(sctx);
     }
-    return QUIC_STATUS_SUCCESS;
+
+    break;
 }
 
 static QUIC_STATUS QUIC_API
@@ -291,29 +308,70 @@ quic_connection_callback(HQUIC Connection, void *Context, QUIC_CONNECTION_EVENT 
         pthread_mutex_unlock(&ctx->lock);
         break;
     case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
-        HQUIC stream = Event->PEER_STREAM_STARTED.Stream;
-        struct iperf_quic_stream_ctx *sctx = quic_stream_ctx_create(stream, test);
-        if (!sctx)
+
+    HQUIC stream = Event->PEER_STREAM_STARTED.Stream;
+
+    struct iperf_quic_stream_ctx *sctx =
+        quic_stream_ctx_create(stream, test);
+
+    if (!sctx)
+        break;
+
+    ctx->api->SetCallbackHandler(stream,
+                                 (void*)quic_stream_callback,
+                                 sctx);
+
+    ctx->api->StreamReceiveSetEnabled(stream, TRUE);
+
+    /* map QUIC stream to iperf stream */
+    struct iperf_stream *sp = NULL;
+    struct iperf_stream *tmp;
+
+    SLIST_FOREACH(tmp, &test->streams, streams) {
+        if (tmp->data == NULL) {
+            sp = tmp;
             break;
-        ctx->api->SetCallbackHandler(stream, (void *)quic_stream_callback, sctx);
-        ctx->api->StreamReceiveSetEnabled(stream, TRUE);
-        pthread_mutex_lock(&ctx->lock);
-        quic_accept_enqueue(ctx, sctx);
-        pthread_mutex_unlock(&ctx->lock);
-        break;
+        }
     }
-    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+
+    if (!sp)
+        sp = SLIST_FIRST(&test->streams);
+
+    sctx->sp = sp;
+    sp->data = sctx;
+
+    /* fix sender direction */
+    if (test->reverse) {
+        if (test->role == 'c')
+            sp->sender = 0;
+        else
+            sp->sender = 1;
+    } else {
+        if (test->role == 'c')
+            sp->sender = 1;
+        else
+            sp->sender = 0;
+    }
+
+    pthread_mutex_lock(&ctx->lock);
+    quic_accept_enqueue(ctx, sctx);
+    pthread_mutex_unlock(&ctx->lock);
+
+    break;
+}
+    case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE: {
+
+    struct iperf_quic_context *ctx =
+        (struct iperf_quic_context *)Context;
+
+    if (ctx) {
         pthread_mutex_lock(&ctx->lock);
-        ctx->ready = 0;
         ctx->shutdown_complete = 1;
-        pthread_cond_broadcast(&ctx->cond);
+        pthread_cond_signal(&ctx->cond);
         pthread_mutex_unlock(&ctx->lock);
-        quic_signal_notify(ctx);
-        break;
-    default:
-        break;
     }
-    return QUIC_STATUS_SUCCESS;
+
+    break;
 }
 
 static QUIC_STATUS QUIC_API
@@ -732,23 +790,33 @@ iperf_quic_connect(struct iperf_test *test)
 
     HQUIC stream = NULL;
 
-    /* open QUIC stream */
-    if (QUIC_FAILED(status =
-        ctx->api->StreamOpen(ctx->connection,
-                             QUIC_STREAM_OPEN_FLAG_NONE,
-                             quic_stream_callback,
-                             sctx,
-                             &stream))) {
+/* open QUIC stream */
+if (QUIC_FAILED(status =
+    ctx->api->StreamOpen(ctx->connection,
+                         QUIC_STREAM_OPEN_FLAG_NONE,
+                         quic_stream_callback,
+                         sctx,
+                         &stream))) {
 
-        free(sctx);
-        i_errno = IECONNECT;
-        return -1;
-    }
+    free(sctx);
+    i_errno = IECONNECT;
+    return -1;
+}
 
-    sctx->stream = stream;
+sctx->stream = stream;
 
-    /* enable receiving */
-    ctx->api->StreamReceiveSetEnabled(stream, TRUE);
+/* IMPORTANT: start the stream */
+if (QUIC_FAILED(status =
+    ctx->api->StreamStart(stream, QUIC_STREAM_START_FLAG_NONE))) {
+
+    ctx->api->StreamClose(stream);
+    free(sctx);
+    i_errno = IECONNECT;
+    return -1;
+}
+
+/* enable receiving */
+ctx->api->StreamReceiveSetEnabled(stream, TRUE);
 
     /* start stream */
     if (QUIC_FAILED(status =
@@ -801,6 +869,18 @@ iperf_quic_attach_stream(struct iperf_test *test,
     /* attach */
     sp->data = sctx;
     sctx->sp = sp;
+    if (test->reverse) {
+    if (test->role == 'c')
+        sp->sender = 0;   /* client receives */
+    else
+        sp->sender = 1;   /* server sends */
+} else {
+    if (test->role == 'c')
+        sp->sender = 1;   /* client sends */
+    else
+        sp->sender = 0;   /* server receives */
+}
+
 
     sp->socket = 1000 + stream_id;
     sp->sender = (test->mode == SENDER);
@@ -816,13 +896,17 @@ iperf_quic_attach_stream(struct iperf_test *test,
 struct quic_send_ctx {
     uint8_t *buf;
     size_t len;
+    struct iperf_stream *sp;
+
 };
 
 int
 iperf_quic_send(struct iperf_stream *sp)
 {
-    struct iperf_quic_stream_ctx *sctx = (struct iperf_quic_stream_ctx *)sp->data;
+    struct iperf_quic_stream_ctx *sctx =
+        (struct iperf_quic_stream_ctx *)sp->data;
     struct iperf_quic_context *ctx = sp->test->quic_ctx;
+
     if (!sctx || !ctx || !sctx->stream)
         return NET_HARDERROR;
 
@@ -830,6 +914,15 @@ iperf_quic_send(struct iperf_stream *sp)
         sp->pending_size = sp->settings->blksize;
 
     size_t size = (size_t)sp->pending_size;
+
+    /* --- FLOW CONTROL: allow only one in-flight send per stream --- */
+    pthread_mutex_lock(&sctx->lock);
+    while (sctx->send_inflight) {
+        pthread_cond_wait(&sctx->send_cond, &sctx->lock);
+    }
+    sctx->send_inflight = 1;
+    pthread_mutex_unlock(&sctx->lock);
+    /* -------------------------------------------------------------- */
 
     struct quic_send_ctx *sc = malloc(sizeof(*sc));
     if (!sc)
@@ -840,7 +933,9 @@ iperf_quic_send(struct iperf_stream *sp)
         free(sc);
         return NET_HARDERROR;
     }
+
     sc->len = size;
+    sc->sp  = sp;
 
     memcpy(sc->buf, sp->buffer, size);
 
@@ -848,10 +943,21 @@ iperf_quic_send(struct iperf_stream *sp)
     qb.Length = (uint32_t)size;
     qb.Buffer = sc->buf;
 
-    QUIC_STATUS status = ctx->api->StreamSend(sctx->stream, &qb, 1, QUIC_SEND_FLAG_NONE, sc);
+    QUIC_STATUS status =
+        ctx->api->StreamSend(sctx->stream, &qb, 1,
+                             QUIC_SEND_FLAG_NONE, sc);
+
     if (QUIC_FAILED(status)) {
         if (sp->test->debug)
-            iperf_printf(sp->test, "QUIC: StreamSend failed, 0x%x\n", status);
+            iperf_printf(sp->test,
+                         "QUIC: StreamSend failed, 0x%x\n",
+                         status);
+
+        pthread_mutex_lock(&sctx->lock);
+        sctx->send_inflight = 0;
+        pthread_cond_signal(&sctx->send_cond);
+        pthread_mutex_unlock(&sctx->lock);
+
         free(sc->buf);
         free(sc);
         return NET_HARDERROR;
@@ -859,9 +965,8 @@ iperf_quic_send(struct iperf_stream *sp)
 
     sp->pending_size = 0;
 
-    /* IMPORTANT: don’t credit bytes_sent here.
-       Do it in QUIC_STREAM_EVENT_SEND_COMPLETE using sc->len,
-       so each stream gets correct final totals and reverse is sane. */
+    /* IMPORTANT:
+       bytes_sent accounting is done in SEND_COMPLETE */
     return (int)size;
 }
 
