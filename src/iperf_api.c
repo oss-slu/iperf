@@ -2030,7 +2030,7 @@ iperf_check_throttle(struct iperf_stream *sp, struct iperf_time *nowP)
     uint64_t bits_per_second;
     int64_t missing_rate;
     uint64_t bits_sent;
-
+    
 #if defined(HAVE_CLOCK_NANOSLEEP) || defined(HAVE_NANOSLEEP)
     struct timespec nanosleep_time;
     int64_t time_to_green_light, delta_bits;
@@ -5532,7 +5532,7 @@ iperf_set_control_keepalive(struct iperf_test *test)
                 return -1;
             }
         }
-    
+   
         // Seems that at least in Windows WSL2, TCP keepalive retries full interval must be
         // smaller than the idle interval. Otherwise, the keepalive message is sent only once.
         if (test->settings->cntl_ka_keepidle) {
