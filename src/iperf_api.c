@@ -1356,98 +1356,70 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
                 set_protocol(test, Pudp);
 		client_flag = 1;
                 break;
-            case OPT_QUIC:
+	    case OPT_QUIC:
+	    case OPT_QUIC_CERT:
+	    case OPT_QUIC_KEY:
+	    case OPT_QUIC_KEY_PASSWORD:
+	    case OPT_QUIC_P12:
+	    case OPT_QUIC_P12_PASSWORD:
+	    case OPT_QUIC_PORT:
+	    case OPT_QUIC_BUF:
 #if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
+		i_errno = IEUNIMP;
+		return -1;
 #else
-                set_protocol(test, Pquic);
-                break;
-#endif
-            case OPT_QUIC_CERT:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_cert_file)
-                    free(test->quic_cert_file);
-                test->quic_cert_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_KEY:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_key_file)
-                    free(test->quic_key_file);
-                test->quic_key_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_KEY_PASSWORD:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_key_password)
-                    free(test->quic_key_password);
-                if (optarg[0] == '\0')
-                    test->quic_key_password = NULL;
-                else
-                    test->quic_key_password = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_P12:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_p12_file)
-                    free(test->quic_p12_file);
-                test->quic_p12_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_P12_PASSWORD:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_p12_password)
-                    free(test->quic_p12_password);
-                if (optarg[0] == '\0')
-                    test->quic_p12_password = NULL;
-                else
-                    test->quic_p12_password = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_PORT:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                test->quic_port = atoi(optarg);
-                if (test->quic_port <= 0 || test->quic_port > 65535) {
-                    i_errno = IEBADPORT;
-                    return -1;
-                }
-                break;
-#endif
-            case OPT_QUIC_BUF:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                test->quic_buf_size = (uint32_t)strtoul(optarg, NULL, 10);
-                if (test->quic_buf_size == 0) {
-                    i_errno = IEBUFSIZE;
-                    return -1;
-                }
-                break;
+		switch (flag) {
+		case OPT_QUIC:
+		    set_protocol(test, Pquic);
+		    break;
+		case OPT_QUIC_CERT:
+		    if (test->quic_cert_file)
+			free(test->quic_cert_file);
+		    test->quic_cert_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_KEY:
+		    if (test->quic_key_file)
+			free(test->quic_key_file);
+		    test->quic_key_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_KEY_PASSWORD:
+		    if (test->quic_key_password)
+			free(test->quic_key_password);
+		    test->quic_key_password = (optarg[0] == '\0')
+			? NULL : strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_P12:
+		    if (test->quic_p12_file)
+			free(test->quic_p12_file);
+		    test->quic_p12_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_P12_PASSWORD:
+		    if (test->quic_p12_password)
+			free(test->quic_p12_password);
+		    test->quic_p12_password = (optarg[0] == '\0')
+			? NULL : strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_PORT:
+		    test->quic_port = atoi(optarg);
+		    if (test->quic_port <= 0 || test->quic_port > 65535) {
+			i_errno = IEBADPORT;
+			return -1;
+		    }
+		    break;
+		case OPT_QUIC_BUF:
+		    test->quic_buf_size = (uint32_t) strtoul(optarg, NULL, 10);
+		    if (test->quic_buf_size == 0) {
+			i_errno = IEBUFSIZE;
+			return -1;
+		    }
+		    break;
+		}
+		break;
 #endif
             case OPT_SCTP:
 #if defined(HAVE_SCTP_H)
