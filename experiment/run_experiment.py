@@ -15,7 +15,7 @@ for run_number, run in enumerate(experiment_runs):
         capture_output=True
     )
     subprocess.run(
-        f"../src/iperf3 -c localhost {'' if run['Protocol'] == 'TCP' else '--' + run['Protocol']} -J -t {run['Duration (s)']} -P {run['Parallelism Level']} -b {str(int(run['Bandwidth cap (bitrate, Gbps)']) * 1_000_000_000)} --logfile out/run_{run_number}.log",
+        f"../src/iperf3 -c localhost {'' if run['Protocol'] == 'tcp' else '--' + run['Protocol']} -J -t {run['Duration (s)']} -P {run['Parallelism Level']} -b {str(int(run['Bandwidth cap (bitrate, Gbps)']) * 1_000_000_000)} --logfile out/run_{run_number}.log",
         shell=True,
         capture_output=True
     )
