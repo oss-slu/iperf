@@ -67,6 +67,7 @@ struct iperf_quic_stream_ctx {
     struct quic_recv_chunk	*head;
     struct quic_recv_chunk	*tail;
     size_t			 queued;
+    int				 pending_sends;
     int				 fin;
     struct iperf_test		*test;
 };
@@ -88,6 +89,16 @@ struct quic_stream_map {
 struct quic_accept_node {
     struct iperf_quic_stream_ctx *sc;
     struct quic_accept_node	*next;
+};
+
+/*
+ * Heap-allocated wrapper for StreamSend.  MsQuic requires both the
+ * QUIC_BUFFER array *and* the data it points to to stay valid until
+ * SEND_COMPLETE fires, so we bundle them together in one allocation.
+ */
+struct quic_send_buf {
+    QUIC_BUFFER			 qb;
+    uint8_t			 data[];
 };
 
 /*
@@ -272,18 +283,28 @@ stream_cb(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
     const QUIC_BUFFER *b;
     struct quic_recv_chunk *chunk;
     uint32_t i;
-    uint64_t total;
 
     sc = (struct iperf_quic_stream_ctx *) Context;
+    if (!sc)
+	return QUIC_STATUS_SUCCESS;
 
     switch (Event->Type) {
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
 	if (Event->SEND_COMPLETE.ClientContext)
 	    free(Event->SEND_COMPLETE.ClientContext);
+	pthread_mutex_lock(&sc->lock);
+	if (sc->pending_sends > 0)
+	    sc->pending_sends--;
+	pthread_cond_signal(&sc->cond);
+	pthread_mutex_unlock(&sc->lock);
 	break;
 
     case QUIC_STREAM_EVENT_RECEIVE:
-	total = 0;
+	/*
+	 * Copy incoming data into our recv queue.  Returning SUCCESS
+	 * tells MsQuic the buffers are consumed; do NOT also call
+	 * StreamReceiveComplete (that is only for the PENDING path).
+	 */
 	for (i = 0; i < Event->RECEIVE.BufferCount; i++) {
 	    b = &Event->RECEIVE.Buffers[i];
 	    chunk = calloc(1, sizeof(*chunk));
@@ -307,12 +328,6 @@ stream_cb(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
 	    sc->queued += chunk->len;
 	    pthread_cond_signal(&sc->cond);
 	    pthread_mutex_unlock(&sc->lock);
-
-	    total += b->Length;
-	}
-	if (total > 0) {
-	    MsQuic->StreamReceiveComplete(Stream, total);
-	    MsQuic->StreamReceiveSetEnabled(Stream, TRUE);
 	}
 	break;
 
@@ -325,6 +340,10 @@ stream_cb(HQUIC Stream, void *Context, QUIC_STREAM_EVENT *Event)
 	break;
 
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+	pthread_mutex_lock(&sc->lock);
+	sc->fin = 1;
+	pthread_cond_broadcast(&sc->cond);
+	pthread_mutex_unlock(&sc->lock);
 	if (!Event->SHUTDOWN_COMPLETE.AppCloseInProgress)
 	    MsQuic->StreamClose(Stream);
 	break;
@@ -362,7 +381,6 @@ conn_cb(HQUIC Connection, void *Context, QUIC_CONNECTION_EVENT *Event)
 	if (!sc)
 	    break;
 	ctx->api->SetCallbackHandler(stream, (void *) stream_cb, sc);
-	ctx->api->StreamReceiveSetEnabled(stream, TRUE);
 	pthread_mutex_lock(&ctx->lock);
 	accept_enq(ctx, sc);
 	pthread_mutex_unlock(&ctx->lock);
@@ -374,7 +392,6 @@ conn_cb(HQUIC Connection, void *Context, QUIC_CONNECTION_EVENT *Event)
 	ctx->done = 1;
 	pthread_cond_broadcast(&ctx->cond);
 	pthread_mutex_unlock(&ctx->lock);
-	notify_pipe(ctx);
 	break;
 
     default:
@@ -399,6 +416,13 @@ listener_cb(HQUIC Listener, void *Context, QUIC_LISTENER_EVENT *Event)
 	ctx->api->SetCallbackHandler(ctx->conn,
 	    (void *) conn_cb, test);
 	ctx->api->ConnectionSetConfiguration(ctx->conn, ctx->cfg);
+	{
+	    QUIC_STREAM_SCHEDULING_SCHEME rr =
+		QUIC_STREAM_SCHEDULING_SCHEME_ROUND_ROBIN;
+	    ctx->api->SetParam(ctx->conn,
+		QUIC_PARAM_CONN_STREAM_SCHEDULING_SCHEME,
+		sizeof(rr), &rr);
+	}
     }
     return QUIC_STATUS_SUCCESS;
 }
@@ -712,7 +736,8 @@ iperf_quic_listen(struct iperf_test *test)
 
 /* iperf_quic_accept
  *
- * accept a new QUIC stream on the server side
+ * accept a new QUIC stream on the server side.
+ * returns stream id (>0) on success, -1 if no streams are queued.
  */
 int
 iperf_quic_accept(struct iperf_test *test)
@@ -727,7 +752,7 @@ iperf_quic_accept(struct iperf_test *test)
 	return -1;
     }
 
-    /* drain the notification byte */
+    /* drain one notification byte from the pipe */
     if (ctx->nfd[0] >= 0) {
 	uint8_t junk;
 	(void) read(ctx->nfd[0], &junk, 1);
@@ -737,12 +762,15 @@ iperf_quic_accept(struct iperf_test *test)
     sc = accept_deq(ctx);
     if (!sc) {
 	pthread_mutex_unlock(&ctx->lock);
-	i_errno = IEACCEPT;
 	return -1;
     }
     id = ++ctx->next_id;
     map_add(ctx, id, sc);
     pthread_mutex_unlock(&ctx->lock);
+
+    if (test->debug)
+	iperf_printf(test, "QUIC: accepted stream id %d (handle %p)\n",
+	    id, (void *) sc->stream);
     return id;
 }
 
@@ -791,6 +819,13 @@ iperf_quic_connect(struct iperf_test *test)
 	if (QUIC_FAILED(status)) {
 	    i_errno = IECONNECT;
 	    return -1;
+	}
+	{
+	    QUIC_STREAM_SCHEDULING_SCHEME rr =
+		QUIC_STREAM_SCHEDULING_SCHEME_ROUND_ROBIN;
+	    ctx->api->SetParam(ctx->conn,
+		QUIC_PARAM_CONN_STREAM_SCHEDULING_SCHEME,
+		sizeof(rr), &rr);
 	}
 	if (test->debug)
 	    iperf_printf(test, "QUIC: connecting to %s:%u\n",
@@ -841,7 +876,6 @@ iperf_quic_connect(struct iperf_test *test)
 	return -1;
     }
     ctx->api->SetCallbackHandler(stream, (void *) stream_cb, sc);
-    ctx->api->StreamReceiveSetEnabled(stream, TRUE);
 
     status = ctx->api->StreamStart(stream, QUIC_STREAM_START_FLAG_IMMEDIATE);
     if (QUIC_FAILED(status)) {
@@ -889,44 +923,80 @@ iperf_quic_attach_stream(struct iperf_test *test, struct iperf_stream *sp,
  *
  * send one block of data on a QUIC stream
  */
+#define QUIC_MAX_PENDING_SENDS	32
+
 int
 iperf_quic_send(struct iperf_stream *sp)
 {
     struct iperf_quic_stream_ctx *sc;
     struct iperf_quic_context *ctx;
+    struct quic_send_buf *sb;
     size_t		 len;
-    uint8_t		*buf;
-    QUIC_BUFFER		 qb;
     QUIC_STATUS		 status;
+    int			 old_cancel;
 
     sc = (struct iperf_quic_stream_ctx *) sp->data;
     ctx = sp->test->quic_ctx;
     if (!sc || !ctx)
 	return NET_HARDERROR;
 
+    /*
+     * Disable thread cancellation while we hold sc->lock.
+     * pthread_cancel would leave the mutex locked, deadlocking
+     * MsQuic's cleanup callbacks.  We rely on sp->done /
+     * test->done + timedwait for thread exit instead.
+     */
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancel);
+
+    /*
+     * Throttle: don't queue more than QUIC_MAX_PENDING_SENDS in MsQuic
+     * at a time.  Without this, one stream can monopolise the connection-
+     * level flow-control window and starve the other parallel streams.
+     */
+    pthread_mutex_lock(&sc->lock);
+    while (sc->pending_sends >= QUIC_MAX_PENDING_SENDS &&
+	   !sc->fin && !sp->done && !sp->test->done) {
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_nsec += 100000000;	/* 100 ms */
+	if (deadline.tv_nsec >= 1000000000) {
+	    deadline.tv_sec++;
+	    deadline.tv_nsec -= 1000000000;
+	}
+	pthread_cond_timedwait(&sc->cond, &sc->lock, &deadline);
+    }
+    if (sc->fin || sp->done || sp->test->done) {
+	pthread_mutex_unlock(&sc->lock);
+	pthread_setcancelstate(old_cancel, NULL);
+	return 0;
+    }
+    sc->pending_sends++;
+    pthread_mutex_unlock(&sc->lock);
+
     if (!sp->pending_size)
 	sp->pending_size = sp->settings->blksize;
     len = (size_t) sp->pending_size;
 
-    buf = malloc(len);
-    if (!buf)
+    sb = malloc(sizeof(*sb) + len);
+    if (!sb)
 	return NET_HARDERROR;
-    memcpy(buf, sp->buffer, len);
+    memcpy(sb->data, sp->buffer, len);
+    sb->qb.Length = (uint32_t) len;
+    sb->qb.Buffer = sb->data;
 
-    qb.Length = (uint32_t) len;
-    qb.Buffer = buf;
-    status = ctx->api->StreamSend(sc->stream, &qb, 1,
-	QUIC_SEND_FLAG_NONE, buf);
+    status = ctx->api->StreamSend(sc->stream, &sb->qb, 1,
+	QUIC_SEND_FLAG_NONE, sb);
     if (QUIC_FAILED(status)) {
 	if (sp->test->debug)
 	    iperf_printf(sp->test, "QUIC: StreamSend failed, 0x%x\n", status);
-	free(buf);
+	free(sb);
 	return NET_HARDERROR;
     }
 
     sp->pending_size = 0;
     sp->result->bytes_sent += len;
     sp->result->bytes_sent_this_interval += len;
+    pthread_setcancelstate(old_cancel, NULL);
     return (int) len;
 }
 
@@ -942,16 +1012,31 @@ iperf_quic_recv(struct iperf_stream *sp)
     struct iperf_quic_stream_ctx *sc;
     struct quic_recv_chunk *c;
     size_t want, got, avail, take;
+    int old_cancel;
 
     sc = (struct iperf_quic_stream_ctx *) sp->data;
-    if (!sc)
+    if (!sc) {
+	if (sp->test->debug)
+	    iperf_printf(sp->test,
+		"QUIC recv: stream %d has no context attached\n", sp->id);
 	return NET_HARDERROR;
+    }
 
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancel);
     pthread_mutex_lock(&sc->lock);
-    while (sc->queued == 0 && !sc->fin && !sp->done && !sp->test->done)
-	pthread_cond_wait(&sc->cond, &sc->lock);
+    while (sc->queued == 0 && !sc->fin && !sp->done && !sp->test->done) {
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_nsec += 100000000;	/* 100 ms */
+	if (deadline.tv_nsec >= 1000000000) {
+	    deadline.tv_sec++;
+	    deadline.tv_nsec -= 1000000000;
+	}
+	pthread_cond_timedwait(&sc->cond, &sc->lock, &deadline);
+    }
     if (sc->queued == 0) {
 	pthread_mutex_unlock(&sc->lock);
+	pthread_setcancelstate(old_cancel, NULL);
 	return 0;
     }
 
@@ -978,6 +1063,8 @@ iperf_quic_recv(struct iperf_stream *sp)
 	}
     }
     pthread_mutex_unlock(&sc->lock);
+
+    pthread_setcancelstate(old_cancel, NULL);
 
     if (sp->test->state == TEST_RUNNING) {
 	sp->result->bytes_received += got;
@@ -1069,17 +1156,20 @@ iperf_quic_free_test(struct iperf_test *test)
 	ctx->listener = NULL;
     }
 
-    if (ctx->conn) {
-	ctx->api->ConnectionShutdown(ctx->conn,
-	    QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-	ctx->api->ConnectionClose(ctx->conn);
-	ctx->conn = NULL;
-    }
-
+    /*
+     * Abort and close all streams before the connection so
+     * that ConnectionClose doesn't block on pending sends.
+     */
     m = ctx->map;
     while (m) {
 	mnext = m->next;
-	close_stream(ctx, m->sc);
+	if (m->sc && m->sc->stream) {
+	    ctx->api->StreamShutdown(m->sc->stream,
+		QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND |
+		QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, 0);
+	    ctx->api->StreamClose(m->sc->stream);
+	    m->sc->stream = NULL;
+	}
 	quic_sc_free(m->sc);
 	free(m);
 	m = mnext;
@@ -1089,12 +1179,25 @@ iperf_quic_free_test(struct iperf_test *test)
     a = ctx->ahead;
     while (a) {
 	anext = a->next;
-	close_stream(ctx, a->sc);
+	if (a->sc && a->sc->stream) {
+	    ctx->api->StreamShutdown(a->sc->stream,
+		QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND |
+		QUIC_STREAM_SHUTDOWN_FLAG_ABORT_RECEIVE, 0);
+	    ctx->api->StreamClose(a->sc->stream);
+	    a->sc->stream = NULL;
+	}
 	quic_sc_free(a->sc);
 	free(a);
 	a = anext;
     }
     ctx->ahead = ctx->atail = NULL;
+
+    if (ctx->conn) {
+	ctx->api->ConnectionShutdown(ctx->conn,
+	    QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT, 0);
+	ctx->api->ConnectionClose(ctx->conn);
+	ctx->conn = NULL;
+    }
 
     if (ctx->nfd[0] >= 0)
 	close(ctx->nfd[0]);

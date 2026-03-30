@@ -82,11 +82,17 @@ iperf_client_worker_run(void *s) {
     while (! (test->done) && ! (sp->done)) {
         if (sp->sender) {
             if (iperf_send_mt(sp) < 0) {
+                if (test->debug)
+                    iperf_printf(test,
+                        "worker: send failed on stream %d\n", sp->id);
                 goto cleanup_and_fail;
             }
         }
         else {
             if (iperf_recv_mt(sp) < 0) {
+                if (test->debug)
+                    iperf_printf(test,
+                        "worker: recv failed on stream %d\n", sp->id);
                 goto cleanup_and_fail;
             }
         }
