@@ -1356,98 +1356,70 @@ iperf_parse_arguments(struct iperf_test *test, int argc, char **argv)
                 set_protocol(test, Pudp);
 		client_flag = 1;
                 break;
-            case OPT_QUIC:
+	    case OPT_QUIC:
+	    case OPT_QUIC_CERT:
+	    case OPT_QUIC_KEY:
+	    case OPT_QUIC_KEY_PASSWORD:
+	    case OPT_QUIC_P12:
+	    case OPT_QUIC_P12_PASSWORD:
+	    case OPT_QUIC_PORT:
+	    case OPT_QUIC_BUF:
 #if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
+		i_errno = IEUNIMP;
+		return -1;
 #else
-                set_protocol(test, Pquic);
-                break;
-#endif
-            case OPT_QUIC_CERT:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_cert_file)
-                    free(test->quic_cert_file);
-                test->quic_cert_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_KEY:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_key_file)
-                    free(test->quic_key_file);
-                test->quic_key_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_KEY_PASSWORD:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_key_password)
-                    free(test->quic_key_password);
-                if (optarg[0] == '\0')
-                    test->quic_key_password = NULL;
-                else
-                    test->quic_key_password = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_P12:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_p12_file)
-                    free(test->quic_p12_file);
-                test->quic_p12_file = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_P12_PASSWORD:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                if (test->quic_p12_password)
-                    free(test->quic_p12_password);
-                if (optarg[0] == '\0')
-                    test->quic_p12_password = NULL;
-                else
-                    test->quic_p12_password = strdup(optarg);
-                server_flag = 1;
-                break;
-#endif
-            case OPT_QUIC_PORT:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                test->quic_port = atoi(optarg);
-                if (test->quic_port <= 0 || test->quic_port > 65535) {
-                    i_errno = IEBADPORT;
-                    return -1;
-                }
-                break;
-#endif
-            case OPT_QUIC_BUF:
-#if !defined(HAVE_MSQUIC)
-                i_errno = IEUNIMP;
-                return -1;
-#else
-                test->quic_buf_size = (uint32_t)strtoul(optarg, NULL, 10);
-                if (test->quic_buf_size == 0) {
-                    i_errno = IEBUFSIZE;
-                    return -1;
-                }
-                break;
+		switch (flag) {
+		case OPT_QUIC:
+		    set_protocol(test, Pquic);
+		    break;
+		case OPT_QUIC_CERT:
+		    if (test->quic_cert_file)
+			free(test->quic_cert_file);
+		    test->quic_cert_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_KEY:
+		    if (test->quic_key_file)
+			free(test->quic_key_file);
+		    test->quic_key_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_KEY_PASSWORD:
+		    if (test->quic_key_password)
+			free(test->quic_key_password);
+		    test->quic_key_password = (optarg[0] == '\0')
+			? NULL : strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_P12:
+		    if (test->quic_p12_file)
+			free(test->quic_p12_file);
+		    test->quic_p12_file = strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_P12_PASSWORD:
+		    if (test->quic_p12_password)
+			free(test->quic_p12_password);
+		    test->quic_p12_password = (optarg[0] == '\0')
+			? NULL : strdup(optarg);
+		    server_flag = 1;
+		    break;
+		case OPT_QUIC_PORT:
+		    test->quic_port = atoi(optarg);
+		    if (test->quic_port <= 0 || test->quic_port > 65535) {
+			i_errno = IEBADPORT;
+			return -1;
+		    }
+		    break;
+		case OPT_QUIC_BUF:
+		    test->quic_buf_size = (uint32_t) strtoul(optarg, NULL, 10);
+		    if (test->quic_buf_size == 0) {
+			i_errno = IEBUFSIZE;
+			return -1;
+		    }
+		    break;
+		}
+		break;
 #endif
             case OPT_SCTP:
 #if defined(HAVE_SCTP_H)
@@ -3254,6 +3226,57 @@ connect_msg(struct iperf_stream *sp)
     char ipl[INET6_ADDRSTRLEN], ipr[INET6_ADDRSTRLEN];
     int lport, rport;
 
+#if defined(HAVE_MSQUIC)
+    /*
+     * QUIC streams use synthetic IDs, not real socket FDs, so we
+     * can't call getsockdomain() on them.  Derive the addresses
+     * from the TCP control socket instead and show the QUIC port.
+     */
+    if (sp->test->protocol->id == Pquic) {
+	struct sockaddr_storage la, ra;
+	socklen_t slen;
+	int qport = sp->test->quic_port > 0
+	    ? sp->test->quic_port : sp->test->server_port;
+
+	slen = sizeof(la);
+	if (getsockname(sp->test->ctrl_sck, (struct sockaddr *) &la,
+			&slen) < 0) {
+	    snprintf(ipl, sizeof(ipl), "?");
+	    lport = 0;
+	} else if (la.ss_family == AF_INET) {
+	    inet_ntop(AF_INET,
+		&((struct sockaddr_in *) &la)->sin_addr,
+		ipl, sizeof(ipl));
+	    mapped_v4_to_regular_v4(ipl);
+	    lport = (sp->test->role == 's') ? qport : 0;
+	} else {
+	    inet_ntop(AF_INET6,
+		&((struct sockaddr_in6 *) &la)->sin6_addr,
+		ipl, sizeof(ipl));
+	    mapped_v4_to_regular_v4(ipl);
+	    lport = (sp->test->role == 's') ? qport : 0;
+	}
+
+	slen = sizeof(ra);
+	if (getpeername(sp->test->ctrl_sck, (struct sockaddr *) &ra,
+			&slen) < 0) {
+	    snprintf(ipr, sizeof(ipr), "?");
+	    rport = 0;
+	} else if (ra.ss_family == AF_INET) {
+	    inet_ntop(AF_INET,
+		&((struct sockaddr_in *) &ra)->sin_addr,
+		ipr, sizeof(ipr));
+	    mapped_v4_to_regular_v4(ipr);
+	    rport = (sp->test->role == 'c') ? qport : 0;
+	} else {
+	    inet_ntop(AF_INET6,
+		&((struct sockaddr_in6 *) &ra)->sin6_addr,
+		ipr, sizeof(ipr));
+	    mapped_v4_to_regular_v4(ipr);
+	    rport = (sp->test->role == 'c') ? qport : 0;
+	}
+    } else
+#endif
     if (getsockdomain(sp->socket) == AF_INET) {
         inet_ntop(AF_INET, (void *) &((struct sockaddr_in *) &sp->local_addr)->sin_addr, ipl, sizeof(ipl));
 	mapped_v4_to_regular_v4(ipl);

@@ -95,11 +95,17 @@ iperf_server_worker_run(void *s) {
     while (! (test->done) && ! (sp->done)) {
         if (sp->sender) {
             if (iperf_send_mt(sp) < 0) {
+                if (test->debug)
+                    iperf_printf(test,
+                        "worker: send failed on stream %d\n", sp->id);
                 goto cleanup_and_fail;
             }
         }
         else {
             if (iperf_recv_mt(sp) < 0) {
+                if (test->debug)
+                    iperf_printf(test,
+                        "worker: recv failed on stream %d\n", sp->id);
                 goto cleanup_and_fail;
             }
         }
@@ -812,20 +818,26 @@ iperf_run_server(struct iperf_test *test)
                 if (FD_ISSET(test->prot_listener, &read_set)) {
 
                     if (test->protocol->id == Pquic) {
-                        if ((s = test->protocol->accept(test)) < 0) {
-                            cleanup_server(test);
-                            return -1;
-                        }
+                        /*
+                         * Drain all queued QUIC streams in one pass.
+                         * MsQuic enqueues each PEER_STREAM_STARTED
+                         * independently; accept until the queue is
+                         * empty or we have all the streams we need.
+                         */
+                        for (;;) {
+                            s = test->protocol->accept(test);
+                            if (s < 0)
+                                break;
 
-                        if (rec_streams_accepted != streams_to_rec) {
-                            flag = 0;
-                            ++rec_streams_accepted;
-                        } else if (send_streams_accepted != streams_to_send) {
-                            flag = 1;
-                            ++send_streams_accepted;
-                        }
+                            if (rec_streams_accepted != streams_to_rec) {
+                                flag = 0;
+                                ++rec_streams_accepted;
+                            } else if (send_streams_accepted != streams_to_send) {
+                                flag = 1;
+                                ++send_streams_accepted;
+                            } else
+                                break;
 
-                        if (flag != -1) {
                             sp = iperf_new_stream(test, s, flag);
                             if (!sp) {
                                 cleanup_server(test);
@@ -836,6 +848,10 @@ iperf_run_server(struct iperf_test *test)
                                 test->on_new_stream(sp);
 
                             flag = -1;
+
+                            if (rec_streams_accepted == streams_to_rec &&
+                                send_streams_accepted == streams_to_send)
+                                break;
                         }
 
                         FD_CLR(test->prot_listener, &read_set);
