@@ -1,5 +1,6 @@
 from mininet.net import Mininet
 from mininet.topo import *
+from mininet.topolib import TreeTopo, TorusTopo
 from mininet.node import OVSBridge
 import argparse
 
@@ -30,11 +31,14 @@ match args.topo:
 
 topo_options = dict(option.split('=') for option in args.topo_options.split(',')) if args.topo_options else {}
 topo_options = {key: int(value) for key, value in topo_options.items()}  # Convert values to integers
-tree = topo_cls(**topo_options)
+topo = topo_cls(**topo_options)
 
-net = Mininet(topo=tree, switch=OVSBridge, controller=None)
+out_subdir = f"{args.topo}_{'_'.join(f'{key}{value}' for key, value in topo_options.items())}"
+
+net = Mininet(topo=topo, switch=OVSBridge, controller=None)
 net.start()
-h1, h2  = net.hosts[0], net.hosts[1]
+h1 = net.hosts[0]
 print(h1.cmd('../src/iperf3 -s &'))
-print(h2.cmd(f'python3 run_experiment.py {h1.IP()}'))
+for host in net.hosts[1:]:
+    print(host.cmd(f'python3 run_experiment.py {h1.IP()} {out_subdir} &'))
 net.stop()
