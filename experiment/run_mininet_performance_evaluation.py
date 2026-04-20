@@ -1,5 +1,6 @@
 import csv
 from subprocess import PIPE, STDOUT
+from time import sleep
 
 from mininet.net import Mininet
 from mininet.node import OVSBridge
@@ -33,22 +34,41 @@ for run_number, run in enumerate(experiment_runs):
     topo_options = dict(option.split("=") for option in run["Topology options"].split(",")) if run["Topology options"] else {}
     topo_options = {key: int(value) for key, value in topo_options.items()}
     topo = topo_cls(**topo_options)
+    topo_tag = "_".join(f"{key}{value}" for key, value in topo_options.items())
+    out_subdir_base = f"{run['Topology']}_{topo_tag}" if topo_tag else run["Topology"]
 
     net = Mininet(topo=topo, switch=OVSBridge, controller=None)
     net.start()
 
     h1 = net.hosts[0]
-    server = h1.popen("../src/iperf3", "-s", stdout=PIPE, stderr=STDOUT, text=True)
+    server_log = f"out_mininet_performance_eval/{out_subdir_base}/server.log"
+    h1.cmd(f"mkdir -p out_mininet_performance_eval/{out_subdir_base}")
+    server = h1.popen("sh", "-c", f"../src/iperf3 -s > {server_log} 2>&1")
+    sleep(0.2)
+    if server.poll() is not None:
+        raise RuntimeError(
+            "iperf3 server failed to start on h1. "
+            f"Server log ({server_log}):\n{h1.cmd(f'tail -n 60 {server_log}') }"
+        )
 
     try:
         for host in net.hosts[1:]:
-            out_subdir = f"{run['Topology']}_{host}_{'_'.join(f'{key}{value}' for key, value in topo_options.items())}"
+            sleep(0.1)
+            if server.poll() is not None:
+                raise RuntimeError(
+                    "iperf3 server terminated before client run. "
+                    f"Server log ({server_log}):\n{h1.cmd(f'tail -n 80 {server_log}') }"
+                )
+
+            out_subdir = f"{run['Topology']}_{host.name}_{topo_tag}" if topo_tag else f"{run['Topology']}_{host.name}"
             proc = host.popen(
                 "python3",
                 "-u",
                 "run_mininet_evaluation.py",
                 h1.IP(),
                 out_subdir,
+                "--iperf-timeout",
+                "300",
                 stdout=PIPE,
                 stderr=STDOUT,
                 text=True,
@@ -61,6 +81,7 @@ for run_number, run in enumerate(experiment_runs):
             if return_code != 0:
                 raise RuntimeError(f"run_mininet_evaluation.py failed on {host.name} with exit code {return_code}")
     finally:
-        server.terminate()
-        server.wait(timeout=5)
+        if server.poll() is None:
+            server.terminate()
+            server.wait(timeout=5)
         net.stop()
