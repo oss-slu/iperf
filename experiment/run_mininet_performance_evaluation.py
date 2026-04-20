@@ -4,6 +4,7 @@ from mininet.topolib import TreeTopo, TorusTopo
 from mininet.node import OVSBridge
 import argparse
 import csv
+from subprocess import PIPE, STDOUT
 
 experiment_runs = []
 
@@ -40,5 +41,17 @@ for run_number, run in enumerate(experiment_runs):
     h1 = net.hosts[0]
     print(h1.cmd('../src/iperf3 -s &'))
     for host in net.hosts[1:]:
-        print(host.cmd(f'python3 run_mininet_evaluation.py {h1.IP()} {out_subdir} &'))
+        proc = host.popen(
+            "python3", "-u", "run_mininet_evaluation.py", h1.IP(), out_subdir,
+            stdout=PIPE,
+            stderr=STDOUT,
+            text=True,
+        )
+
+        for line in proc.stdout:
+            print(line, end="")
+
+        return_code = proc.wait()
+        if return_code != 0:
+            print(f"run_mininet_evaluation.py failed with exit code {return_code}")
     net.stop()
