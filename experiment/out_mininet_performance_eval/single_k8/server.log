@@ -9559,3 +9559,7 @@ Accepted connection from 10.0.0.8, port 45254
 [ 12]   0.00-10.00  sec  24.1 GBytes  20.7 Gbits/sec                  receiver
 [ 14]   0.00-10.00  sec  24.2 GBytes  20.8 Gbits/sec                  receiver
 [SUM]   0.00-10.00  sec  96.6 GBytes  82.9 Gbits/sec                  receiver
+iperf3: interrupt - the server has terminated by signal Terminated(15)
+-----------------------------------------------------------
+Server listening on 5201 (test #190)
+-----------------------------------------------------------

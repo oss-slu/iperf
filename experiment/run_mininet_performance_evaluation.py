@@ -60,7 +60,7 @@ for run_number, run in enumerate(experiment_runs):
                     f"Server log ({server_log}):\n{h1.cmd(f'tail -n 80 {server_log}') }"
                 )
 
-            out_subdir = f"{run['Topology']}_{host.name}_{topo_tag}" if topo_tag else f"{run['Topology']}_{host.name}"
+            out_subdir = f"{run['Topology']}_{topo_tag}_{host.name}" if topo_tag else f"{run['Topology']}_{host.name}"
             proc = host.popen(
                 "python3",
                 "-u",

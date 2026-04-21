@@ -20549,3 +20549,7 @@ Accepted connection from 10.0.0.16, port 54718
 [ 12]   0.00-10.00  sec  23.1 GBytes  19.9 Gbits/sec                  receiver
 [ 14]   0.00-10.00  sec  23.4 GBytes  20.1 Gbits/sec                  receiver
 [SUM]   0.00-10.00  sec  92.9 GBytes  79.8 Gbits/sec                  receiver
+iperf3: interrupt - the server has terminated by signal Terminated(15)
+-----------------------------------------------------------
+Server listening on 5201 (test #406)
+-----------------------------------------------------------
