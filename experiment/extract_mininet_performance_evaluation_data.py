@@ -11,6 +11,8 @@ with open("performance_evaluation_2.csv", "r", newline="") as csv_file:
 with open("mininet_performance_evaluation_results.csv", "w", newline="") as evaluation_data_file:
     csv_writer = csv.writer(evaluation_data_file)
     csv_writer.writerow([
+        "Topology",
+        "Host name",
         "Parallelism Level",
         "Bandwidth cap (bitrate, Gbps)",
         "Protocol",
@@ -33,7 +35,25 @@ with open("mininet_performance_evaluation_results.csv", "w", newline="") as eval
                 loss = 0 if run['Protocol'] == 'tcp' else json_data['end']['sum']['lost_percent']
                 throughput = json_data['end']['sum_sent']['bits_per_second'] / 1_000_000_000  # Convert bps to Gbps
 
+                match topology_run["Topology"]:
+                    case "linear":
+                        topology_name = "linear"
+                    case "minimal":
+                        topology_name = "minimal"
+                    case "reversed":
+                        topology_name = "reversed"
+                    case "single":
+                        topology_name = "star"
+                    case "tree":
+                        topology_name = "tree"
+                    case "torus":
+                        topology_name = "torus"
+                    case _:
+                        topology_name = topology_run["Topology"]
+
                 csv_writer.writerow([
+                    f"{topology_name}, {topology_run['Topology options']}",
+                    f"h{host_number}",
                     run['Parallelism Level'],
                     run['Bandwidth cap (bitrate, Gbps)'],
                     run['Protocol'],
