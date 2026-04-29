@@ -31,3 +31,16 @@ examples/Makefile
 examples/mic
 examples/mis
 .vscode/
+
+# Local QUIC stress harness (do not commit lab notes as .md)
+TESTING_DOCUMENT.md
+client_debug.log
+server_debug.log
+.DS_Store
+**/__pycache__/
+*.pyc
+
+# QUIC stress outputs (regenerate: ./stress/run_stress.sh run, or quic_stress_test.sh + plot_stress.py)
+stress_results/*.json
+stress_results/*.csv
+stress_results/graphs/*.png

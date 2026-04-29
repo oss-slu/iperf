@@ -1,0 +1,11 @@
+# Base image must include MsQuic installed under /usr/local.
+FROM iperf3-mininet-quic:latest
+
+COPY . /iperf
+WORKDIR /iperf
+
+RUN ./bootstrap.sh 2>/dev/null || true && \
+    ./configure --with-msquic=/usr/local && \
+    make clean && make -j$(nproc)
+
+RUN mkdir -p /iperf/stress_results
